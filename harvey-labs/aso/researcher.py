@@ -6,21 +6,22 @@ Modal) -> optionally `inspect_trace` a failure -> `set_champion` the winner ->
 repeat until gains plateau. Search budget is allocated by the controller; the
 agent only forms hypotheses and reads results, so its own context stays small.
 
-Model runs via LiteLLM so we can use Claude (set_tracing_disabled avoids the
-OpenAI-key requirement). State is carried in a typed RunContext, not globals.
+The researcher runs natively on an OpenAI model (GPT-5.5) via the Agents SDK
+with high reasoning effort. The inner legal agent and the judge stay on Claude
+(via harvey-labs' own anthropic adapter). State is carried in a typed
+RunContext, not globals. Tracing is left ON: native OpenAI now, so it works with
+OPENAI_API_KEY and gives a free researcher-trace view in the OpenAI dashboard
+for the demo (call set_tracing_disabled(True) to opt out).
 """
 
-import os
 from dataclasses import dataclass, field
 
-from agents import Agent, RunContextWrapper, function_tool, set_tracing_disabled
-from agents.extensions.models.litellm_model import LitellmModel
+from agents import Agent, ModelSettings, RunContextWrapper, function_tool
+from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
 from aso.controller import successive_halving
 from aso.scaffold import Scaffold
-
-set_tracing_disabled(True)  # we use Claude; don't require an OpenAI key for tracing
 
 
 # ── researcher state (carried via RunContext) ────────────────────────────
@@ -169,10 +170,11 @@ consistency). Avoid hardcoding answers to specific tasks — mutations must
 generalize."""
 
 
-def build_researcher(model: str = "anthropic/claude-sonnet-4-6") -> Agent:
+def build_researcher(model: str = "gpt-5.5", reasoning_effort: str = "high") -> Agent:
     return Agent(
         name="scaffold-researcher",
-        model=LitellmModel(model=model, api_key=os.environ.get("ANTHROPIC_API_KEY")),
+        model=model,  # native OpenAI model string (Agents SDK default provider)
+        model_settings=ModelSettings(reasoning=Reasoning(effort=reasoning_effort)),
         instructions=RESEARCHER_INSTRUCTIONS,
         tools=[evaluate, inspect_trace, set_champion],
     )

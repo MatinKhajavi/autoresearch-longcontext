@@ -100,7 +100,8 @@ def main():
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--model", default="anthropic/claude-haiku-4-5", help="inner agent model")
     p.add_argument("--judge-model", default="claude-haiku-4-5")
-    p.add_argument("--researcher-model", default="anthropic/claude-sonnet-4-6")
+    p.add_argument("--researcher-model", default="gpt-5.5",
+                   help="OpenAI model for the researcher orchestrator (Agents SDK, native)")
     p.add_argument("--inner-max-turns", type=int, default=120)
     a = p.parse_args()
     asyncio.run(run_optimization(
