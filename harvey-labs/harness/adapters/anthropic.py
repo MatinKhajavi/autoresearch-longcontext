@@ -17,6 +17,34 @@ from harness.adapters.base import ModelAdapter, ModelResponse, ToolCall
 # Models that support adaptive thinking
 ADAPTIVE_MODELS = {"claude-opus-4-6", "claude-sonnet-4-6"}
 
+# Beta header for server-side context management (tool-result clearing).
+CONTEXT_MGMT_BETA = "context-management-2025-06-27"
+
+
+def build_context_management(module_config: dict | None) -> dict | None:
+    """Translate a Scaffold's module_config into Anthropic context-management.
+
+    ASO's long-context "tool-result clearing" module: when enabled, the API
+    drops the oldest tool_result payloads (keeping the tool_use record so the
+    model knows the call happened and can re-read), preventing the
+    fill-the-window-and-die failure mode. Lossless for re-fetchable reads.
+
+    Returns None when clearing is not configured (baseline behavior).
+    """
+    cfg = (module_config or {}).get("clearing")
+    if not isinstance(cfg, dict):  # absent / None / False -> disabled; {} -> enabled w/ defaults
+        return None
+    return {
+        "edits": [
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": cfg.get("trigger", 100000)},
+                "keep": {"type": "tool_uses", "value": cfg.get("keep", 3)},
+                "clear_at_least": {"type": "input_tokens", "value": cfg.get("clear_at_least", 5000)},
+            }
+        ]
+    }
+
 
 class AnthropicAdapter(ModelAdapter):
     """Adapter for Anthropic's Claude models."""
@@ -73,9 +101,20 @@ class AnthropicAdapter(ModelAdapter):
             kwargs["extra_body"] = {"output_config": {"effort": self.reasoning_effort}}
             kwargs["temperature"] = 1  # Required when thinking is enabled
 
+        # ASO long-context module: server-side tool-result clearing when the
+        # scaffold enables it (set on the adapter as `module_config`). Uses the
+        # beta endpoint; otherwise the unchanged stable path.
+        context_management = build_context_management(getattr(self, "module_config", None))
+
         # Always stream to avoid SDK timeout on large responses
-        with self.client.messages.stream(**kwargs) as stream:
-            response = stream.get_final_message()
+        if context_management is not None:
+            kwargs["context_management"] = context_management
+            kwargs["betas"] = [CONTEXT_MGMT_BETA]
+            with self.client.beta.messages.stream(**kwargs) as stream:
+                response = stream.get_final_message()
+        else:
+            with self.client.messages.stream(**kwargs) as stream:
+                response = stream.get_final_message()
 
         # Extract tool calls and text from content blocks
         tool_calls = []
