@@ -42,7 +42,7 @@ def mean_by_variant(results: list[dict]) -> dict[str, float]:
     return {vid: (sum(v) / len(v) if v else 0.0) for vid, v in by.items()}
 
 
-def successive_halving(
+async def successive_halving(
     variants: dict[str, Scaffold],
     screen: list[str],
     dev: list[str],
@@ -54,7 +54,7 @@ def successive_halving(
     seeds: int = 1,
 ) -> tuple[str | None, dict]:
     # 1. SCREEN
-    screen_results = eval_fn(build_jobs(variants, screen, model, judge_model, max_turns, seeds))
+    screen_results = await eval_fn(build_jobs(variants, screen, model, judge_model, max_turns, seeds))
     screen_means = mean_by_variant(screen_results)
 
     # 2. PRUNE — keep top-m by screen mean (the rest never touch the dev set)
@@ -62,7 +62,7 @@ def successive_halving(
 
     # 3. PROMOTE — survivors on the full dev set
     survivor_variants = {v: variants[v] for v in survivors}
-    dev_results = eval_fn(build_jobs(survivor_variants, dev, model, judge_model, max_turns, seeds))
+    dev_results = await eval_fn(build_jobs(survivor_variants, dev, model, judge_model, max_turns, seeds))
     dev_means = mean_by_variant(dev_results)
 
     # 4. champion = best dev mean (fallback to best screener if dev empty)
@@ -83,10 +83,13 @@ def successive_halving(
 
 
 def make_modal_eval_fn(ledger=None, jsonl_path=None, refresh=None):
-    """Production eval_fn: fan jobs out to the Modal `run_eval_job` function.
+    """Production eval_fn (async): fan jobs out to the Modal `run_eval_job` function.
 
+    Uses Modal's async `fn.map.aio()` because the optimizer runs inside an event
+    loop (the Agents SDK researcher) — the sync `.map()` can't be iterated there.
     ~20 concurrent (bounded by the function's max_containers). Exceptions are
     normalized to failed-result dicts so one bad run never crashes the round.
+    `order_outputs=True` keeps results aligned with `jobs` for index mapping.
     """
     import modal
 
@@ -94,11 +97,14 @@ def make_modal_eval_fn(ledger=None, jsonl_path=None, refresh=None):
 
     fn = modal.Function.from_name("aso", "run_eval_job")
 
-    def eval_fn(jobs: list[dict]) -> list[dict]:
+    async def eval_fn(jobs: list[dict]) -> list[dict]:
         if ledger is not None:
             ledger.start(len(jobs))
         results: list[dict] = []
-        for job, res in zip(jobs, fn.map(jobs, return_exceptions=True)):
+        idx = 0
+        async for res in fn.map.aio(jobs, return_exceptions=True, order_outputs=True):
+            job = jobs[idx]
+            idx += 1
             if isinstance(res, Exception):
                 res = {
                     "variant_id": job["variant_id"], "task": job["task"],

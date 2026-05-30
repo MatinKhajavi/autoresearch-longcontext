@@ -117,9 +117,7 @@ async def evaluate(ctx: RunContextWrapper[ResearchState], variants: list[Variant
         built[v.id] = apply_patch(st.champion, v)
         specs[v.id] = v
         st.materialized[v.id] = built[v.id]
-    # successive_halving drives Modal's sync .map(); run it off the event loop.
-    _champ, table = await asyncio.to_thread(
-        successive_halving,
+    _champ, table = await successive_halving(
         built, st.screen, st.dev, st.eval_fn,
         keep_m=st.keep_m, model=st.model, judge_model=st.judge_model,
         max_turns=st.inner_max_turns, seeds=st.seeds,

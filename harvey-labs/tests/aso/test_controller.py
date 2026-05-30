@@ -1,3 +1,5 @@
+import asyncio
+
 from pytest import approx
 
 from aso.controller import build_jobs, mean_by_variant, successive_halving
@@ -40,7 +42,7 @@ def test_successive_halving_prunes_then_promotes():
     variants = {"good": _scaf("good"), "bad1": _scaf("bad1"), "bad2": _scaf("bad2")}
     calls = {"screen_variants": None, "dev_variants": None}
 
-    def fake_eval(jobs):
+    async def fake_eval(jobs):
         # record which variants reached each stage by task-set size
         tasks = {j["task"] for j in jobs}
         stage = "screen" if tasks == {"s1"} else "dev"
@@ -51,10 +53,10 @@ def test_successive_halving_prunes_then_promotes():
             for j in jobs
         ]
 
-    champ, table = successive_halving(
+    champ, table = asyncio.run(successive_halving(
         variants, screen=["s1"], dev=["d1", "d2"], eval_fn=fake_eval,
         keep_m=1, model="m", judge_model="j",
-    )
+    ))
     assert champ == "good"
     assert calls["screen_variants"] == {"good", "bad1", "bad2"}   # all screened
     assert calls["dev_variants"] == {"good"}                       # only survivor promoted
@@ -66,13 +68,13 @@ def test_successive_halving_keep_m_two():
     variants = {"a": _scaf("a"), "b": _scaf("b"), "c": _scaf("c")}
     scores = {"a": 0.8, "b": 0.5, "c": 0.1}
 
-    def fake_eval(jobs):
+    async def fake_eval(jobs):
         return [{"variant_id": j["variant_id"], "task": j["task"], "status": "ok",
                  "pass_rate": scores[j["variant_id"]]} for j in jobs]
 
-    champ, table = successive_halving(
+    champ, table = asyncio.run(successive_halving(
         variants, screen=["s1"], dev=["d1"], eval_fn=fake_eval,
         keep_m=2, model="m", judge_model="j",
-    )
+    ))
     assert set(table["survivors"]) == {"a", "b"}   # c pruned
     assert champ == "a"

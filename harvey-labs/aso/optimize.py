@@ -26,10 +26,10 @@ from aso.tracking import RunLedger, live
 RESULTS = Path(__file__).resolve().parent.parent / "results" / "aso"
 
 
-def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_turns, variant_id, seeds=1):
+async def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_turns, variant_id, seeds=1):
     """Run one scaffold across `tasks` (× `seeds`) via the fan-out; return (mean, results)."""
     jobs = build_jobs({variant_id: scaffold}, tasks, model, judge_model, max_turns, seeds)
-    results = eval_fn(jobs)
+    results = await eval_fn(jobs)
     return mean_by_variant(results).get(variant_id, 0.0), results
 
 
@@ -44,13 +44,12 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         baseline = Scaffold.baseline()
 
         # ── Baseline on dev + holdout (the number to beat) ───────────────
-        # Modal's sync .map() can't be iterated from the event loop → run in a thread.
-        base_dev_mean, base_dev_results = await asyncio.to_thread(
-            evaluate_scaffold, baseline, dev, eval_fn, model, judge_model,
-            inner_max_turns, "baseline", seeds=headline_seeds)
-        base_hold_mean, _ = await asyncio.to_thread(
-            evaluate_scaffold, baseline, holdout, eval_fn, model, judge_model,
-            inner_max_turns, "baseline_holdout", seeds=headline_seeds)
+        base_dev_mean, base_dev_results = await evaluate_scaffold(
+            baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline",
+            seeds=headline_seeds)
+        base_hold_mean, _ = await evaluate_scaffold(
+            baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout",
+            seeds=headline_seeds)
         base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
         sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
         (RESULTS / "baseline.json").write_text(json.dumps({
@@ -78,12 +77,12 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
 
         # ── Champion on dev + holdout (honest headline) ──────────────────
         ledger.round_label = "champion-eval"
-        champ_dev_mean, _ = await asyncio.to_thread(
-            evaluate_scaffold, state.champion, dev, eval_fn, model, judge_model,
-            inner_max_turns, "champion", seeds=headline_seeds)
-        champ_hold_mean, champ_hold_results = await asyncio.to_thread(
-            evaluate_scaffold, state.champion, holdout, eval_fn, model, judge_model,
-            inner_max_turns, "champion_holdout", seeds=headline_seeds)
+        champ_dev_mean, _ = await evaluate_scaffold(
+            state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion",
+            seeds=headline_seeds)
+        champ_hold_mean, champ_hold_results = await evaluate_scaffold(
+            state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout",
+            seeds=headline_seeds)
         champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
 
     (RESULTS / "champion.json").write_text(json.dumps({
