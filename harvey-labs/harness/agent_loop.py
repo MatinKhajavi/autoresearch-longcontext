@@ -1,0 +1,185 @@
+"""The agent loop — model calls tools until it finishes or hits max turns.
+
+This is the core of the harness. It's deliberately simple: the model does
+the thinking, the loop just shuttles messages back and forth.
+
+The agent finishes when it stops making tool calls (no explicit `finish`
+tool). The agent loop ends on:
+  1. No tool calls returned — the model has nothing more to do
+  2. Max turns reached
+"""
+
+import time
+import json
+from pathlib import Path
+
+from harness.adapters.base import ModelAdapter, ModelResponse
+from harness.tools import ToolExecutor, get_all_tool_definitions
+
+
+VALIDATE_REVISE_PROMPT = (
+    "Before you finish: act as a senior reviewer of your own work. Re-read the task "
+    "instructions and EACH deliverable you produced. List every required element, fact, "
+    "citation, or analytical step the instructions call for, and check the deliverable "
+    "against it. For anything missing, wrong, or unsupported, use `edit`/`write` to fix it "
+    "now. If — and only if — the deliverable fully satisfies the instructions, stop."
+)
+
+
+def run_agent(
+    adapter: ModelAdapter,
+    system_prompt: str,
+    user_prompt: str,
+    tool_executor: ToolExecutor,
+    tools: list[dict] | None = None,
+    max_turns: int = 200,
+    transcript_path: str | None = None,
+    module_config: dict | None = None,
+) -> dict:
+    """Run the agent loop to completion.
+
+    Args:
+        adapter: The model adapter (Anthropic, OpenAI, Google, xAI).
+        system_prompt: Capabilities and conventions (preamble + skill manuals).
+        user_prompt: The first user message — the task assignment.
+        tool_executor: Configured tool executor with documents and output dirs.
+        tools: Tool definitions to use. Defaults to standard 6 tools if not provided.
+        max_turns: Maximum number of loop iterations.
+        transcript_path: Optional path to write transcript JSONL.
+
+    Returns:
+        Dict with run results: messages, metrics, timing.
+    """
+    messages = [
+        adapter.make_system_message(system_prompt),
+        adapter.make_user_message(user_prompt),
+    ]
+    if tools is None:
+        tools = get_all_tool_definitions()
+
+    # Tier-2 validate-then-revise module: force N self-review+fix passes before the
+    # agent is allowed to finish (Harvey's highest-leverage behavior, made structural).
+    validate_passes_left = int((module_config or {}).get("validate_revise", 0))
+
+    total_input_tokens = 0
+    total_output_tokens = 0
+    peak_input_tokens = 0   # largest single-request prompt (vs the model window) — the real overflow gauge
+    turn_count = 0
+    start_time = time.time()
+
+    transcript_file = None
+    if transcript_path:
+        Path(transcript_path).parent.mkdir(parents=True, exist_ok=True)
+        transcript_file = open(transcript_path, "w")
+
+    context_overflow = False
+    try:
+        for turn in range(max_turns):
+            turn_count = turn + 1
+
+            # Call the model
+            try:
+                response = adapter.chat(messages, tools)
+            except Exception as e:
+                err_msg = str(e)
+                if "prompt is too long" in err_msg or "context_length_exceeded" in err_msg:
+                    context_overflow = True
+                    print(f"Context window exceeded on turn {turn_count}: {err_msg}")
+                    break
+                raise
+
+            messages.append(response.message)
+            total_input_tokens += response.input_tokens
+            total_output_tokens += response.output_tokens
+            peak_input_tokens = max(peak_input_tokens, response.input_tokens)
+
+            # Log to transcript
+            if transcript_file:
+                _log_turn(transcript_file, turn_count, "assistant", response)
+
+            # Anthropic 4.5+ signals an over-window prompt with HTTP 200 +
+            # stop_reason="model_context_window_exceeded" (NOT an exception), so detect
+            # it here in addition to the error-string path in the try/except above.
+            if getattr(response, "stop_reason", None) == "model_context_window_exceeded":
+                context_overflow = True
+                print(f"Context window exceeded (stop_reason) on turn {turn_count}")
+                break
+
+            # If no tool calls, the agent thinks it's done.
+            if not response.tool_calls:
+                # Tier-2 module: inject a forced validate-then-revise turn before
+                # accepting completion (only if the deliverable might still have gaps).
+                if validate_passes_left > 0:
+                    validate_passes_left -= 1
+                    messages.append(adapter.make_user_message(VALIDATE_REVISE_PROMPT))
+                    if transcript_file:
+                        _log_tool(transcript_file, turn_count, "validate_revise",
+                                  "(injected)", VALIDATE_REVISE_PROMPT)
+                    continue
+                break
+
+            # Execute each tool call and feed results back
+            tool_results = []
+            for tc in response.tool_calls:
+                result = tool_executor.execute(tc.name, tc.arguments)
+
+                if transcript_file:
+                    _log_tool(transcript_file, turn_count, tc.name, tc.arguments, result)
+
+                tool_results.append((tc, result))
+
+            # Add tool results to message history via the adapter
+            result_messages = adapter.make_tool_result_messages(
+                [(tc.id, result) for tc, result in tool_results]
+            )
+            messages.extend(result_messages)
+
+    finally:
+        if transcript_file:
+            transcript_file.close()
+
+    elapsed = time.time() - start_time
+
+    return {
+        "messages": messages,
+        "turn_count": turn_count,
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
+        "peak_input_tokens": peak_input_tokens,
+        "wall_clock_seconds": round(elapsed, 2),
+        "finished_cleanly": (not context_overflow and
+                             (not response.tool_calls if turn_count > 0 else False)),
+        "context_overflow": context_overflow,
+        "tool_metrics": tool_executor.get_metrics(),
+        "finish_summary": None,
+    }
+
+
+def _log_turn(f, turn: int, role: str, response: ModelResponse):
+    """Log a turn to the transcript JSONL."""
+    entry = {
+        "turn": turn,
+        "role": role,
+        "text": response.text[:500] if response.text else None,
+        "tool_calls": [
+            {"name": tc.name, "arguments": tc.arguments}
+            for tc in response.tool_calls
+        ] if response.tool_calls else None,
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
+    }
+    f.write(json.dumps(entry) + "\n")
+    f.flush()
+
+
+def _log_tool(f, turn: int, name: str, arguments: str, result: str):
+    """Log a tool execution to the transcript JSONL."""
+    entry = {
+        "turn": turn,
+        "role": "tool",
+        "tool_name": name,
+        "arguments": arguments if isinstance(arguments, str) else str(arguments),
+        "result_preview": result[:1000],
+    }
+    f.write(json.dumps(entry) + "\n")
+    f.flush()

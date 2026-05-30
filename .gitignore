@@ -1,0 +1,6 @@
+# secrets — never commit
+.env
+.env.*
+
+# local tooling junk
+.playwright-mcp/
