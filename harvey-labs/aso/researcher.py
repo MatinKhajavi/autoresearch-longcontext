@@ -14,6 +14,7 @@ OPENAI_API_KEY and gives a free researcher-trace view in the OpenAI dashboard
 for the demo (call set_tracing_disabled(True) to opt out).
 """
 
+import asyncio
 from dataclasses import dataclass, field
 
 from agents import Agent, ModelSettings, RunContextWrapper, function_tool
@@ -116,7 +117,9 @@ async def evaluate(ctx: RunContextWrapper[ResearchState], variants: list[Variant
         built[v.id] = apply_patch(st.champion, v)
         specs[v.id] = v
         st.materialized[v.id] = built[v.id]
-    _champ, table = successive_halving(
+    # successive_halving drives Modal's sync .map(); run it off the event loop.
+    _champ, table = await asyncio.to_thread(
+        successive_halving,
         built, st.screen, st.dev, st.eval_fn,
         keep_m=st.keep_m, model=st.model, judge_model=st.judge_model,
         max_turns=st.inner_max_turns, seeds=st.seeds,
