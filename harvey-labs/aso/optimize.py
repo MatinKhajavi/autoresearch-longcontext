@@ -33,7 +33,8 @@ def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_turns, v
     return mean_by_variant(results).get(variant_id, 0.0), results
 
 
-async def run_optimization(rounds, model, judge_model, researcher_model, inner_max_turns):
+async def run_optimization(rounds, model, judge_model, researcher_model, inner_max_turns,
+                           screen=SCREEN, dev=DEV, holdout=HOLDOUT):
     RESULTS.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(round_label="baseline")
     jsonl = RESULTS / "runs.jsonl"
@@ -44,22 +45,22 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
 
         # ── Baseline on dev + holdout (the number to beat) ───────────────
         base_dev_mean, base_dev_results = evaluate_scaffold(
-            baseline, DEV, eval_fn, model, judge_model, inner_max_turns, "baseline")
+            baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline")
         base_hold_mean, _ = evaluate_scaffold(
-            baseline, HOLDOUT, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout")
+            baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout")
         base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
         sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
         (RESULTS / "baseline.json").write_text(json.dumps({
             "dev_mean_pass_rate": base_dev_mean, "holdout_mean_pass_rate": base_hold_mean,
             "dev_overflows": base_overflows, "model": model, "judge_model": judge_model,
-            "n_dev": len(DEV), "n_holdout": len(HOLDOUT),
+            "n_dev": len(dev), "n_holdout": len(holdout),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }, indent=2))
 
         # ── Researcher loop (agent proposes; controller allocates) ───────
         ledger.round_label = "optimizing"
         state = ResearchState(
-            champion=baseline, screen=SCREEN, dev=DEV, model=model, judge_model=judge_model,
+            champion=baseline, screen=screen, dev=dev, model=model, judge_model=judge_model,
             eval_fn=eval_fn, inner_max_turns=inner_max_turns, baseline_dev_mean=round(base_dev_mean, 3),
         )
         researcher = build_researcher(model=researcher_model)
@@ -74,9 +75,9 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         # ── Champion on dev + holdout (honest headline) ──────────────────
         ledger.round_label = "champion-eval"
         champ_dev_mean, _ = evaluate_scaffold(
-            state.champion, DEV, eval_fn, model, judge_model, inner_max_turns, "champion")
+            state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion")
         champ_hold_mean, champ_hold_results = evaluate_scaffold(
-            state.champion, HOLDOUT, eval_fn, model, judge_model, inner_max_turns, "champion_holdout")
+            state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout")
         champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
 
     (RESULTS / "champion.json").write_text(json.dumps({
@@ -103,9 +104,16 @@ def main():
     p.add_argument("--researcher-model", default="gpt-5.5",
                    help="OpenAI model for the researcher orchestrator (Agents SDK, native)")
     p.add_argument("--inner-max-turns", type=int, default=120)
+    p.add_argument("--max-screen", type=int, default=None, help="cap screen tasks (fast validation)")
+    p.add_argument("--max-dev", type=int, default=None, help="cap dev tasks (fast validation)")
+    p.add_argument("--max-holdout", type=int, default=None, help="cap holdout tasks (fast validation)")
     a = p.parse_args()
+    screen = SCREEN[: a.max_screen] if a.max_screen else SCREEN
+    dev = DEV[: a.max_dev] if a.max_dev else DEV
+    holdout = HOLDOUT[: a.max_holdout] if a.max_holdout else HOLDOUT
     asyncio.run(run_optimization(
-        a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns))
+        a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns,
+        screen=screen, dev=dev, holdout=holdout))
 
 
 if __name__ == "__main__":
