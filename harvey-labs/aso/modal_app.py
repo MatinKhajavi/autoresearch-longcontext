@@ -31,6 +31,7 @@ image = (
             "**/.venv", "**/.git", "**/results", "**/__pycache__",
             "**/.pytest_cache", "**/.playwright-mcp", "**/node_modules",
             "**/docs", "**/*.pyc",
+            "**/.env", "**/.env.*",   # SECURITY: keys come from the Modal secret, never the image
         ],
     )
     .workdir(REPO_REMOTE)
