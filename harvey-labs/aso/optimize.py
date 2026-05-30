@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agents import Runner
+from harness.run import _load_env
+
+# Load harvey-labs/.env so the LOCAL researcher (GPT-5.5) sees OPENAI_API_KEY.
+# (Remote Modal runs get their keys from the llm-keys secret instead.)
+_load_env()
 
 from aso.controller import build_jobs, make_modal_eval_fn, mean_by_variant
 from aso.datasets import DEV, HOLDOUT, SCREEN
