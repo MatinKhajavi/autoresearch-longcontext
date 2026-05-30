@@ -22,8 +22,10 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("pandoc")
     .pip_install_from_pyproject(str(REPO_LOCAL / "pyproject.toml"))
-    # Ship the whole repo (code + curated tasks) to a fixed path; exclude heavy
-    # / irrelevant dirs. Tasks are baked in so workers need no network for data.
+    .workdir(REPO_REMOTE)              # build steps must come BEFORE add_local_*
+    .env({"PYTHONPATH": REPO_REMOTE})
+    # Ship the whole repo (code + tasks) to a fixed path; exclude heavy/irrelevant
+    # dirs. add_local_dir must be LAST (Modal adds it at container startup).
     .add_local_dir(
         str(REPO_LOCAL),
         remote_path=REPO_REMOTE,
@@ -34,8 +36,6 @@ image = (
             "**/.env", "**/.env.*",   # SECURITY: keys come from the Modal secret, never the image
         ],
     )
-    .workdir(REPO_REMOTE)
-    .env({"PYTHONPATH": REPO_REMOTE})
 )
 
 
