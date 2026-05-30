@@ -33,16 +33,17 @@ Built on the [Harvey LAB](https://github.com/harveyai/harvey-labs) legal-agent b
 
 ## What gets optimized (the long-context module library)
 
-The search space is an **evidence-graded** library of long-context techniques (from an adversarially-verified research pass — see `docs/superpowers/specs/`):
+The mutation surface is gated into **tiers** so each is a clean experiment (`--tier`):
 
-| Module | What | Evidence |
-|---|---|---|
-| **Tool-result clearing** | drop old tool-result payloads from context, keep the call record (re-fetchable) — fixes the agent's *fill-the-window-and-die* failure | **strong** for survival; native `clear_tool_uses_20250919` |
-| Coverage policy | require broad document reading before drafting | Harvey +0.4 |
-| Validate-then-revise | post-draft self-check against the instructions, then fix | Harvey +1.5 (biggest lever) |
-| File memo / bridge | externalize must-keep facts; carry a read-list across compaction | strong (mechanism) |
+- **Tier 1 — text:** the researcher rewrites the system prompt only. This already reaches the big behavioral levers (coverage-first, validate-then-revise *as prompt wording*).
+- **Tier 2 — text + long-context modules:** the researcher can additionally toggle real code modules:
+  - **Tool-result clearing** (`clear_tool_uses_20250919`, native) — drops old tool-result payloads from context but keeps them re-fetchable. Fixes the *fill-the-window-and-die* failure on long matters. **Strong** evidence for survival.
+  - **Validate-then-revise** — *structurally forces* N self-review-and-fix passes in the agent loop before completion (vs Tier 1 merely asking). Harvey's biggest lever (+1.5).
+- **Tier 3 — + code** (designed, backlog): edits to skill helper-scripts behind a compile gate.
 
-Decisive caveat baked into the design: **lossy summarization silently drops exact numeric/clause facts** (probe: task-central facts 3/3 preserved, obscure table/clause facts 0/3). Legal rubrics check exactly those facts — so reads are kept lossless (clearing → re-fetch), and summary-compaction is reserved for reasoning, never facts.
+Champions from each tier are compared on the holdout set → a **freedom-vs-payoff** chart.
+
+Evidence is graded from an adversarially-verified research pass (`docs/superpowers/specs/`). Decisive caveat baked into the design: **lossy summarization silently drops exact numeric/clause facts** (probe: task-central 3/3 preserved, obscure table/clause 0/3). Legal rubrics check exactly those facts — so document reads are kept *lossless* (clearing → re-fetch); summary-compaction was deliberately **not** used for the inner agent.
 
 ## Why it uses Modal properly
 
@@ -78,10 +79,23 @@ printf 'OPENAI_API_KEY=...\nANTHROPIC_API_KEY=...\n' > .env
 modal secret create llm-keys ANTHROPIC_API_KEY=... OPENAI_API_KEY=...
 uv run modal deploy aso/modal_app.py
 
-# the autoresearch loop
-uv run python -m aso.optimize --rounds 3
-uv run python -m aso.report          # -> results/aso/report.md + PNGs
+# the autoresearch loop (per tier)
+uv run python -m aso.optimize --tier 1 --rounds 1     # text-only scaffold search
+uv run modal deploy aso/modal_app.py                  # redeploy before tier 2 (activates modules)
+uv run python -m aso.optimize --tier 2 --rounds 1     # + long-context modules
+uv run python -m aso.report                           # -> results/aso/report.md + PNGs
 ```
+
+Useful flags: `--seeds`/`--headline-seeds` (runs per (variant,task), averaged to beat agent noise), `--max-dev`/`--max-holdout`/`--max-screen` (cap pool sizes).
+
+### Watching it live
+
+Three granularities, all real-time:
+- `tail -f results/aso/runs_tier1.jsonl` — every agent-run as it finishes (status, pass_rate, overflow, turns, docs_read). Failures show up here immediately.
+- `tail -f results/aso/rounds_tier1.jsonl` — one line per researcher round: each variant's mean, who survived the prune, the round champion, Δ vs baseline, and the hypotheses tried.
+- The **OpenAI traces dashboard** — the GPT-5.5 researcher's live reasoning + tool calls.
+
+Any single task can be deep-audited locally (`results/<run-id>/transcript.jsonl` = every turn; `scores.json` = per-criterion judge verdicts + reasoning).
 
 ## Tests
 
