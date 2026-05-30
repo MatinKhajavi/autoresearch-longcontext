@@ -35,6 +35,7 @@ class ResearchState:
     eval_fn: object                       # callable(jobs)->list[dict]
     keep_m: int = 2
     inner_max_turns: int = 120
+    seeds: int = 1                        # runs per (variant, task) — averaged (noise control)
     rounds_done: int = 0
     materialized: dict[str, Scaffold] = field(default_factory=dict)
     traces: dict[str, str] = field(default_factory=dict)   # run_id -> transcript tail
@@ -118,7 +119,7 @@ async def evaluate(ctx: RunContextWrapper[ResearchState], variants: list[Variant
     _champ, table = successive_halving(
         built, st.screen, st.dev, st.eval_fn,
         keep_m=st.keep_m, model=st.model, judge_model=st.judge_model,
-        max_turns=st.inner_max_turns,
+        max_turns=st.inner_max_turns, seeds=st.seeds,
     )
     st.rounds_done += 1
     summary = _summarize(table, specs, st)

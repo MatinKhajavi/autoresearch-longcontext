@@ -15,11 +15,15 @@ from aso.scaffold import Scaffold
 
 
 def build_jobs(variants: dict[str, Scaffold], tasks: list[str], model: str,
-               judge_model: str, max_turns: int) -> list[dict]:
+               judge_model: str, max_turns: int, seeds: int = 1) -> list[dict]:
+    """One job per (variant, task, seed). `seeds`>1 replicates each (variant,task)
+    to average out the agent's run-to-run nondeterminism (mean_by_variant then
+    averages over tasks AND seeds)."""
     return [
         {
             "variant_id": vid,
             "task": task,
+            "seed": s,
             "scaffold": scaf.model_dump(),
             "model": model,
             "judge_model": judge_model,
@@ -27,6 +31,7 @@ def build_jobs(variants: dict[str, Scaffold], tasks: list[str], model: str,
         }
         for vid, scaf in variants.items()
         for task in tasks
+        for s in range(seeds)
     ]
 
 
@@ -46,9 +51,10 @@ def successive_halving(
     model: str,
     judge_model: str,
     max_turns: int = 120,
+    seeds: int = 1,
 ) -> tuple[str | None, dict]:
     # 1. SCREEN
-    screen_results = eval_fn(build_jobs(variants, screen, model, judge_model, max_turns))
+    screen_results = eval_fn(build_jobs(variants, screen, model, judge_model, max_turns, seeds))
     screen_means = mean_by_variant(screen_results)
 
     # 2. PRUNE — keep top-m by screen mean (the rest never touch the dev set)
@@ -56,7 +62,7 @@ def successive_halving(
 
     # 3. PROMOTE — survivors on the full dev set
     survivor_variants = {v: variants[v] for v in survivors}
-    dev_results = eval_fn(build_jobs(survivor_variants, dev, model, judge_model, max_turns))
+    dev_results = eval_fn(build_jobs(survivor_variants, dev, model, judge_model, max_turns, seeds))
     dev_means = mean_by_variant(dev_results)
 
     # 4. champion = best dev mean (fallback to best screener if dev empty)

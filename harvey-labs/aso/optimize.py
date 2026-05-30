@@ -26,15 +26,15 @@ from aso.tracking import RunLedger, live
 RESULTS = Path(__file__).resolve().parent.parent / "results" / "aso"
 
 
-def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_turns, variant_id):
-    """Run one scaffold across `tasks` via the fan-out; return (mean, results)."""
-    jobs = build_jobs({variant_id: scaffold}, tasks, model, judge_model, max_turns)
+def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_turns, variant_id, seeds=1):
+    """Run one scaffold across `tasks` (× `seeds`) via the fan-out; return (mean, results)."""
+    jobs = build_jobs({variant_id: scaffold}, tasks, model, judge_model, max_turns, seeds)
     results = eval_fn(jobs)
     return mean_by_variant(results).get(variant_id, 0.0), results
 
 
 async def run_optimization(rounds, model, judge_model, researcher_model, inner_max_turns,
-                           screen=SCREEN, dev=DEV, holdout=HOLDOUT):
+                           screen=SCREEN, dev=DEV, holdout=HOLDOUT, seeds=1, headline_seeds=3):
     RESULTS.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(round_label="baseline")
     jsonl = RESULTS / "runs.jsonl"
@@ -45,9 +45,10 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
 
         # ── Baseline on dev + holdout (the number to beat) ───────────────
         base_dev_mean, base_dev_results = evaluate_scaffold(
-            baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline")
+            baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline", seeds=headline_seeds)
         base_hold_mean, _ = evaluate_scaffold(
-            baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout")
+            baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout",
+            seeds=headline_seeds)
         base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
         sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
         (RESULTS / "baseline.json").write_text(json.dumps({
@@ -61,7 +62,8 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         ledger.round_label = "optimizing"
         state = ResearchState(
             champion=baseline, screen=screen, dev=dev, model=model, judge_model=judge_model,
-            eval_fn=eval_fn, inner_max_turns=inner_max_turns, baseline_dev_mean=round(base_dev_mean, 3),
+            eval_fn=eval_fn, inner_max_turns=inner_max_turns, seeds=seeds,
+            baseline_dev_mean=round(base_dev_mean, 3),
         )
         researcher = build_researcher(model=researcher_model)
         seed = (
@@ -75,9 +77,11 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         # ── Champion on dev + holdout (honest headline) ──────────────────
         ledger.round_label = "champion-eval"
         champ_dev_mean, _ = evaluate_scaffold(
-            state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion")
+            state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion",
+            seeds=headline_seeds)
         champ_hold_mean, champ_hold_results = evaluate_scaffold(
-            state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout")
+            state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout",
+            seeds=headline_seeds)
         champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
 
     (RESULTS / "champion.json").write_text(json.dumps({
@@ -100,20 +104,24 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--model", default="anthropic/claude-haiku-4-5", help="inner agent model")
-    p.add_argument("--judge-model", default="claude-haiku-4-5")
+    p.add_argument("--judge-model", default="claude-sonnet-4-6",
+                   help="stricter judge than Haiku; more discriminating signal (measured)")
     p.add_argument("--researcher-model", default="gpt-5.5",
                    help="OpenAI model for the researcher orchestrator (Agents SDK, native)")
     p.add_argument("--inner-max-turns", type=int, default=120)
     p.add_argument("--max-screen", type=int, default=None, help="cap screen tasks (fast validation)")
     p.add_argument("--max-dev", type=int, default=None, help="cap dev tasks (fast validation)")
     p.add_argument("--max-holdout", type=int, default=None, help="cap holdout tasks (fast validation)")
+    p.add_argument("--seeds", type=int, default=2, help="runs per (variant,task) in the loop, averaged")
+    p.add_argument("--headline-seeds", type=int, default=3,
+                   help="runs per task for the baseline/champion headline numbers, averaged")
     a = p.parse_args()
     screen = SCREEN[: a.max_screen] if a.max_screen else SCREEN
     dev = DEV[: a.max_dev] if a.max_dev else DEV
     holdout = HOLDOUT[: a.max_holdout] if a.max_holdout else HOLDOUT
     asyncio.run(run_optimization(
         a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns,
-        screen=screen, dev=dev, holdout=holdout))
+        screen=screen, dev=dev, holdout=holdout, seeds=a.seeds, headline_seeds=a.headline_seeds))
 
 
 if __name__ == "__main__":

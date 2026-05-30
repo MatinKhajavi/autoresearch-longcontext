@@ -20,6 +20,13 @@ def test_build_jobs_is_variant_cross_task():
     assert jobs[0]["max_turns"] == 50
 
 
+def test_build_jobs_replicates_by_seeds():
+    variants = {"a": _scaf("a")}
+    jobs = build_jobs(variants, ["t1", "t2"], model="m", judge_model="j", max_turns=50, seeds=3)
+    assert len(jobs) == 6                       # 1 variant × 2 tasks × 3 seeds
+    assert sorted(j["seed"] for j in jobs if j["task"] == "t1") == [0, 1, 2]
+
+
 def test_mean_by_variant_averages_across_tasks():
     results = [
         {"variant_id": "a", "pass_rate": 0.2},

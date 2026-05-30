@@ -14,6 +14,7 @@ never raised — so a single bad run never crashes a fan-out).
 
 import json
 import time
+import uuid
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -59,13 +60,15 @@ def run_and_score(
     task: str,
     scaffold: Scaffold,
     model: str = "anthropic/claude-haiku-4-5",
-    judge_model: str = "claude-haiku-4-5",
+    judge_model: str = "claude-sonnet-4-6",   # stricter + more discriminating than Haiku (measured)
     max_turns: int = 120,
     run_id: str | None = None,
     variant_id: str | None = None,
     judge_parallel: int = 6,
 ) -> EvalResult:
-    run_id = run_id or f"aso/{_slug(task)}/{model.split('/')[-1]}/{int(time.time() * 1000)}"
+    # uuid (not just time) so K parallel seed-replicas of the same (variant,task)
+    # never collide on the run directory.
+    run_id = run_id or f"aso/{_slug(task)}/{model.split('/')[-1]}/{uuid.uuid4().hex[:10]}"
 
     def _fail(e: Exception) -> EvalResult:
         return EvalResult(

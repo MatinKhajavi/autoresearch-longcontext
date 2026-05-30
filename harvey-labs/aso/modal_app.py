@@ -60,7 +60,7 @@ def run_eval_job(job: dict) -> dict:
         task=job["task"],
         scaffold=scaffold,
         model=job.get("model", "anthropic/claude-haiku-4-5"),
-        judge_model=job.get("judge_model", "claude-haiku-4-5"),
+        judge_model=job.get("judge_model", "claude-sonnet-4-6"),
         max_turns=job.get("max_turns", 120),
         variant_id=job.get("variant_id"),
     )
