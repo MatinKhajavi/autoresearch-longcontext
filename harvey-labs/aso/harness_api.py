@@ -112,6 +112,7 @@ def run_and_score(
                 tools=get_all_tool_definitions(),
                 max_turns=max_turns,
                 transcript_path=str(results_dir / "transcript.jsonl"),
+                module_config=scaffold.module_config,   # enables validate_revise etc.
             )
         finally:
             sandbox.stop()

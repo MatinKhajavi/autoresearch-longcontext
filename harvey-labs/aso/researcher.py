@@ -60,9 +60,10 @@ class VariantSpec(BaseModel):
     """One proposed scaffold mutation. Behavioral, not numeric-only."""
     id: str
     hypothesis: str
-    system_prompt_append: str | None = None       # text appended to the system prompt
-    system_prompt_replace: str | None = None       # full replacement (rare)
-    enable_clearing: ClearingSpec | None = None     # Phase 5: turn on tool-result clearing
+    system_prompt_append: str | None = None        # text appended to the system prompt
+    system_prompt_replace: str | None = None        # full replacement (rare)
+    enable_clearing: ClearingSpec | None = None      # Tier 2 module: tool-result clearing
+    validate_revise_passes: int | None = None        # Tier 2 module: forced self-review+fix passes (1-2)
 
 
 def apply_patch(champion: Scaffold, spec: VariantSpec, tier: int = 2) -> Scaffold:
@@ -83,6 +84,8 @@ def apply_patch(champion: Scaffold, spec: VariantSpec, tier: int = 2) -> Scaffol
             "trigger": spec.enable_clearing.trigger,
             "keep": spec.enable_clearing.keep,
         }
+    if tier >= 2 and spec.validate_revise_passes:
+        module_config["validate_revise"] = int(spec.validate_revise_passes)
     return champion.copy_with(system_prompt=system_prompt, module_config=module_config)
 
 
@@ -189,9 +192,12 @@ TIER_SURFACE = {
         "system_prompt_replace). Do NOT set enable_clearing — module toggles are ignored at "
         "this tier. Induce coverage/validation behavior through prompt wording alone."),
     2: ("MUTATION SURFACE (Tier 2 — TEXT + MODULES): use system_prompt_append AND, where a "
-        "hypothesis calls for it, enable_clearing to turn on server-side tool-result clearing "
-        "(drops old document reads from context but keeps them re-fetchable — prevents the "
-        "agent from overflowing the window and giving up on long matters)."),
+        "hypothesis calls for it, these long-context modules: (a) enable_clearing — server-side "
+        "tool-result clearing that drops old document reads from context but keeps them "
+        "re-fetchable (prevents window overflow on long matters); (b) validate_revise_passes "
+        "(1-2) — forces the agent through that many mandatory self-review-and-fix passes before "
+        "it may finish (structurally guarantees the validate-then-revise behavior rather than "
+        "merely asking for it in the prompt). Compose modules with prompt edits as hypotheses warrant."),
 }
 
 

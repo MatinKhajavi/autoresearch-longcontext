@@ -17,6 +17,15 @@ from harness.adapters.base import ModelAdapter, ModelResponse
 from harness.tools import ToolExecutor, get_all_tool_definitions
 
 
+VALIDATE_REVISE_PROMPT = (
+    "Before you finish: act as a senior reviewer of your own work. Re-read the task "
+    "instructions and EACH deliverable you produced. List every required element, fact, "
+    "citation, or analytical step the instructions call for, and check the deliverable "
+    "against it. For anything missing, wrong, or unsupported, use `edit`/`write` to fix it "
+    "now. If — and only if — the deliverable fully satisfies the instructions, stop."
+)
+
+
 def run_agent(
     adapter: ModelAdapter,
     system_prompt: str,
@@ -25,6 +34,7 @@ def run_agent(
     tools: list[dict] | None = None,
     max_turns: int = 200,
     transcript_path: str | None = None,
+    module_config: dict | None = None,
 ) -> dict:
     """Run the agent loop to completion.
 
@@ -46,6 +56,10 @@ def run_agent(
     ]
     if tools is None:
         tools = get_all_tool_definitions()
+
+    # Tier-2 validate-then-revise module: force N self-review+fix passes before the
+    # agent is allowed to finish (Harvey's highest-leverage behavior, made structural).
+    validate_passes_left = int((module_config or {}).get("validate_revise", 0))
 
     total_input_tokens = 0
     total_output_tokens = 0
@@ -81,8 +95,17 @@ def run_agent(
             if transcript_file:
                 _log_turn(transcript_file, turn_count, "assistant", response)
 
-            # If no tool calls, the agent is done
+            # If no tool calls, the agent thinks it's done.
             if not response.tool_calls:
+                # Tier-2 module: inject a forced validate-then-revise turn before
+                # accepting completion (only if the deliverable might still have gaps).
+                if validate_passes_left > 0:
+                    validate_passes_left -= 1
+                    messages.append(adapter.make_user_message(VALIDATE_REVISE_PROMPT))
+                    if transcript_file:
+                        _log_tool(transcript_file, turn_count, "validate_revise",
+                                  "(injected)", VALIDATE_REVISE_PROMPT)
+                    continue
                 break
 
             # Execute each tool call and feed results back
