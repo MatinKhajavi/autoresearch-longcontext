@@ -34,10 +34,11 @@ async def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_tu
 
 
 async def run_optimization(rounds, model, judge_model, researcher_model, inner_max_turns,
-                           screen=SCREEN, dev=DEV, holdout=HOLDOUT, seeds=1, headline_seeds=3):
+                           screen=SCREEN, dev=DEV, holdout=HOLDOUT, seeds=1, headline_seeds=3,
+                           tier=1):
     RESULTS.mkdir(parents=True, exist_ok=True)
-    ledger = RunLedger(round_label="baseline")
-    jsonl = RESULTS / "runs.jsonl"
+    ledger = RunLedger(round_label=f"tier{tier}-baseline")
+    jsonl = RESULTS / f"runs_tier{tier}.jsonl"   # per-tier so T1/T2/T3 don't overwrite
 
     with live(ledger) as refresh:
         eval_fn = make_modal_eval_fn(ledger=ledger, jsonl_path=jsonl, refresh=refresh)
@@ -52,21 +53,21 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
             seeds=headline_seeds)
         base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
         sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
-        (RESULTS / "baseline.json").write_text(json.dumps({
+        (RESULTS / f"baseline_tier{tier}.json").write_text(json.dumps({
             "dev_mean_pass_rate": base_dev_mean, "holdout_mean_pass_rate": base_hold_mean,
             "dev_overflows": base_overflows, "model": model, "judge_model": judge_model,
-            "n_dev": len(dev), "n_holdout": len(holdout),
+            "n_dev": len(dev), "n_holdout": len(holdout), "tier": tier,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }, indent=2))
 
         # ── Researcher loop (agent proposes; controller allocates) ───────
-        ledger.round_label = "optimizing"
+        ledger.round_label = f"tier{tier}-optimizing"
         state = ResearchState(
             champion=baseline, screen=screen, dev=dev, model=model, judge_model=judge_model,
-            eval_fn=eval_fn, inner_max_turns=inner_max_turns, seeds=seeds,
+            eval_fn=eval_fn, inner_max_turns=inner_max_turns, seeds=seeds, tier=tier,
             baseline_dev_mean=round(base_dev_mean, 3),
         )
-        researcher = build_researcher(model=researcher_model)
+        researcher = build_researcher(model=researcher_model, tier=tier)
         seed = (
             f"Baseline scaffold scores {base_dev_mean:.3f} mean criterion-pass-rate on the "
             f"dev set ({len(DEV)} tasks). Sample failing criteria: {sample_fails}. "
@@ -85,20 +86,22 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
             seeds=headline_seeds)
         champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
 
-    (RESULTS / "champion.json").write_text(json.dumps({
+    (RESULTS / f"champion_tier{tier}.json").write_text(json.dumps({
+        "tier": tier,
         "baseline_dev_mean": base_dev_mean, "champion_dev_mean": champ_dev_mean,
         "baseline_holdout_mean": base_hold_mean, "champion_holdout_mean": champ_hold_mean,
         "champion_holdout_overflows": champ_overflows,
         "rounds_done": state.rounds_done, "history": state.history,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }, indent=2))
-    (RESULTS / "champion_scaffold.json").write_text(json.dumps(state.champion.model_dump(), indent=2))
+    (RESULTS / f"champion_scaffold_tier{tier}.json").write_text(
+        json.dumps(state.champion.model_dump(), indent=2))
 
     print("\n" + "=" * 64)
-    print(f"  rounds: {state.rounds_done}")
+    print(f"  TIER {tier}  rounds: {state.rounds_done}")
     print(f"  DEV     baseline {base_dev_mean:.3f}  ->  champion {champ_dev_mean:.3f}")
     print(f"  HOLDOUT baseline {base_hold_mean:.3f}  ->  champion {champ_hold_mean:.3f}")
-    print(f"  saved -> {RESULTS}/champion.json")
+    print(f"  saved -> {RESULTS}/champion_tier{tier}.json")
 
 
 def main():
@@ -116,13 +119,16 @@ def main():
     p.add_argument("--seeds", type=int, default=2, help="runs per (variant,task) in the loop, averaged")
     p.add_argument("--headline-seeds", type=int, default=3,
                    help="runs per task for the baseline/champion headline numbers, averaged")
+    p.add_argument("--tier", type=int, default=1, choices=[1, 2, 3],
+                   help="mutation surface: 1=text only, 2=+long-context modules, 3=+code")
     a = p.parse_args()
     screen = SCREEN[: a.max_screen] if a.max_screen else SCREEN
     dev = DEV[: a.max_dev] if a.max_dev else DEV
     holdout = HOLDOUT[: a.max_holdout] if a.max_holdout else HOLDOUT
     asyncio.run(run_optimization(
         a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns,
-        screen=screen, dev=dev, holdout=holdout, seeds=a.seeds, headline_seeds=a.headline_seeds))
+        screen=screen, dev=dev, holdout=holdout, seeds=a.seeds, headline_seeds=a.headline_seeds,
+        tier=a.tier))
 
 
 if __name__ == "__main__":

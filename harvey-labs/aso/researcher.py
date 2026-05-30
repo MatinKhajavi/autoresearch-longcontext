@@ -37,6 +37,7 @@ class ResearchState:
     keep_m: int = 2
     inner_max_turns: int = 120
     seeds: int = 1                        # runs per (variant, task) — averaged (noise control)
+    tier: int = 1                         # 1=text only; 2=+long-context modules; 3=+code
     rounds_done: int = 0
     materialized: dict[str, Scaffold] = field(default_factory=dict)
     traces: dict[str, str] = field(default_factory=dict)   # run_id -> transcript tail
@@ -62,15 +63,20 @@ class VariantSpec(BaseModel):
     enable_clearing: ClearingSpec | None = None     # Phase 5: turn on tool-result clearing
 
 
-def apply_patch(champion: Scaffold, spec: VariantSpec) -> Scaffold:
-    """Build a new Scaffold from the champion + a variant's edits."""
+def apply_patch(champion: Scaffold, spec: VariantSpec, tier: int = 2) -> Scaffold:
+    """Build a new Scaffold from the champion + a variant's edits.
+
+    `tier` gates the mutation surface so each tier is a clean experiment:
+      tier 1 = text only (system prompt); module toggles are ignored.
+      tier >=2 = text + long-context modules (e.g. tool-result clearing).
+    """
     system_prompt = champion.system_prompt
     if spec.system_prompt_replace is not None:
         system_prompt = spec.system_prompt_replace
     elif spec.system_prompt_append:
         system_prompt = champion.system_prompt + "\n\n" + spec.system_prompt_append
     module_config = dict(champion.module_config)
-    if spec.enable_clearing is not None:
+    if tier >= 2 and spec.enable_clearing is not None:
         module_config["clearing"] = {
             "trigger": spec.enable_clearing.trigger,
             "keep": spec.enable_clearing.keep,
@@ -114,7 +120,7 @@ async def evaluate(ctx: RunContextWrapper[ResearchState], variants: list[Variant
     built: dict[str, Scaffold] = {}
     specs: dict[str, VariantSpec] = {}
     for v in variants:
-        built[v.id] = apply_patch(st.champion, v)
+        built[v.id] = apply_patch(st.champion, v, tier=st.tier)
         specs[v.id] = v
         st.materialized[v.id] = built[v.id]
     _champ, table = await successive_halving(
@@ -172,11 +178,23 @@ consistency). Avoid hardcoding answers to specific tasks — mutations must
 generalize."""
 
 
-def build_researcher(model: str = "gpt-5.5", reasoning_effort: str = "high") -> Agent:
+TIER_SURFACE = {
+    1: ("MUTATION SURFACE (Tier 1 — TEXT ONLY): use system_prompt_append (or, rarely, "
+        "system_prompt_replace). Do NOT set enable_clearing — module toggles are ignored at "
+        "this tier. Induce coverage/validation behavior through prompt wording alone."),
+    2: ("MUTATION SURFACE (Tier 2 — TEXT + MODULES): use system_prompt_append AND, where a "
+        "hypothesis calls for it, enable_clearing to turn on server-side tool-result clearing "
+        "(drops old document reads from context but keeps them re-fetchable — prevents the "
+        "agent from overflowing the window and giving up on long matters)."),
+}
+
+
+def build_researcher(model: str = "gpt-5.5", reasoning_effort: str = "high", tier: int = 1) -> Agent:
+    instructions = RESEARCHER_INSTRUCTIONS + "\n\n" + TIER_SURFACE.get(tier, TIER_SURFACE[2])
     return Agent(
         name="scaffold-researcher",
         model=model,  # native OpenAI model string (Agents SDK default provider)
         model_settings=ModelSettings(reasoning=Reasoning(effort=reasoning_effort)),
-        instructions=RESEARCHER_INSTRUCTIONS,
+        instructions=instructions,
         tools=[evaluate, inspect_trace, set_champion],
     )
