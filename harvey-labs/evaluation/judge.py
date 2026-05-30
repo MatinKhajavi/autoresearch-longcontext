@@ -53,7 +53,9 @@ class Judge:
         self.model = model
         self.provider = _detect_provider(model)
         if self.provider == "anthropic":
-            self.client = anthropic.Anthropic(max_retries=1)
+            # max_retries high: the judge is the binding rate-limit path under
+            # fan-out (Sonnet TPM); absorb 429/overloaded as slowdown, not failures.
+            self.client = anthropic.Anthropic(max_retries=8)
         elif self.provider == "google":
             self.client = genai.Client()
         elif self.provider == "openai":

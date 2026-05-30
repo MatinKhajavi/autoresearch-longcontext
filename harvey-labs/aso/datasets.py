@@ -38,7 +38,28 @@ HOLDOUT = [
     "corporate-governance/identify-issues-in-dissident-proxy-statement",
 ]
 
-# Filled in Phase 5: oversized matters (>1MB docs) that exercise compaction.
-OVERFLOW_STRESS: list[str] = []
+# Oversized matters that blow a 200K context window — used to demonstrate the
+# Tier-2 tool-result-clearing module. Real cl100k token counts (measured by
+# running the harness parsers + tiktoken), document payload only; none are in
+# SCREEN/DEV/HOLDOUT. The corpus has no PDFs and nothing >5MB raw, so overflow
+# comes from docx-text expansion + many-file matters, not giant binaries.
+OVERFLOW_STRESS: list[str] = [
+    "funds-asset-management/respond-to-comment-memo",                 # ~917K tok, 10 docx — 4.5x window
+    "tax/draft-cross-border-acquisition-tax-memo",                    # ~467K tok, 22 docx
+    "corporate-ma/draft-acquisition-due-diligence",                  # ~208K tok, 31 files (docx+xlsx)
+    "corporate-governance/assess-impact-of-ftc-noncompete-ban-on-existing-employment-agreements",  # ~213K tok, mixed
+]
+
+# Heavy / document-dense matters where coverage + memory management actually move
+# the needle (the small analysis pools above don't overflow or need compaction).
+# Used via `optimize --task-set heavy` so the long-context win is measurable.
+SCREEN_HEAVY = ["tax/draft-cross-border-acquisition-tax-memo"]              # ~467K tok
+DEV_HEAVY = ["tax/draft-cross-border-acquisition-tax-memo"]                 # ~467K tok (clear memory-mgmt win)
+HOLDOUT_HEAVY = ["tax/draft-transfer-pricing-documentation"]               # ~291K tok (distinct tax-drafting holdout, ~1/3 the 917K)
+
+TASK_SETS = {
+    "default": (SCREEN, DEV, HOLDOUT),
+    "heavy": (SCREEN_HEAVY, DEV_HEAVY, HOLDOUT_HEAVY),
+}
 
 ALL_POOLS = {"screen": SCREEN, "dev": DEV, "holdout": HOLDOUT}

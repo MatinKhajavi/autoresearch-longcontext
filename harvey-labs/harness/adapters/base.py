@@ -34,6 +34,10 @@ class ModelResponse:
     input_tokens: int = 0
     output_tokens: int = 0
 
+    # Provider stop reason — e.g. Anthropic 4.5+ returns "model_context_window_exceeded"
+    # (HTTP 200, not an error) when a request exceeds the context window.
+    stop_reason: str | None = None
+
 
 class ModelAdapter(ABC):
     """Abstract interface for model providers."""

@@ -41,8 +41,8 @@ image = (
 
 @app.function(
     image=image,
-    max_containers=20,                       # cap parallel containers ~20
-    timeout=60 * 30,                         # generous per-run budget
+    max_containers=40,                       # ceiling; Anthropic TPM is the real cap (~20-40 effective)
+    timeout=60 * 60,                         # 60 min — heavy matters (917K-tok) + judge need room
     secrets=[modal.Secret.from_name("llm-keys")],   # ANTHROPIC_API_KEY (+OPENAI optional)
 )
 def run_eval_job(job: dict) -> dict:
@@ -67,10 +67,13 @@ def run_eval_job(job: dict) -> dict:
 
     # Attach a transcript tail so the researcher's inspect_trace works off the
     # returned data (the container's filesystem is ephemeral).
-    transcript_tail = ""
-    tpath = Path(BENCH_ROOT) / "results" / r.run_id / "transcript.jsonl"
-    if tpath.exists():
-        transcript_tail = tpath.read_text(errors="replace")[-4000:]
+    # tier-3 carries the tail on the result (its overlay is deleted before we could
+    # read it here); tier-1/2 leave it empty so we read it from disk.
+    transcript_tail = getattr(r, "transcript_tail", "") or ""
+    if not transcript_tail:
+        tpath = Path(BENCH_ROOT) / "results" / r.run_id / "transcript.jsonl"
+        if tpath.exists():
+            transcript_tail = tpath.read_text(errors="replace")[-4000:]
 
     return {**r.model_dump(), "transcript_tail": transcript_tail}
 

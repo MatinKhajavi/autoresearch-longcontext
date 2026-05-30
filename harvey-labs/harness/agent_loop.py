@@ -63,6 +63,7 @@ def run_agent(
 
     total_input_tokens = 0
     total_output_tokens = 0
+    peak_input_tokens = 0   # largest single-request prompt (vs the model window) — the real overflow gauge
     turn_count = 0
     start_time = time.time()
 
@@ -90,10 +91,19 @@ def run_agent(
             messages.append(response.message)
             total_input_tokens += response.input_tokens
             total_output_tokens += response.output_tokens
+            peak_input_tokens = max(peak_input_tokens, response.input_tokens)
 
             # Log to transcript
             if transcript_file:
                 _log_turn(transcript_file, turn_count, "assistant", response)
+
+            # Anthropic 4.5+ signals an over-window prompt with HTTP 200 +
+            # stop_reason="model_context_window_exceeded" (NOT an exception), so detect
+            # it here in addition to the error-string path in the try/except above.
+            if getattr(response, "stop_reason", None) == "model_context_window_exceeded":
+                context_overflow = True
+                print(f"Context window exceeded (stop_reason) on turn {turn_count}")
+                break
 
             # If no tool calls, the agent thinks it's done.
             if not response.tool_calls:
@@ -135,6 +145,7 @@ def run_agent(
         "turn_count": turn_count,
         "input_tokens": total_input_tokens,
         "output_tokens": total_output_tokens,
+        "peak_input_tokens": peak_input_tokens,
         "wall_clock_seconds": round(elapsed, 2),
         "finished_cleanly": (not context_overflow and
                              (not response.tool_calls if turn_count > 0 else False)),

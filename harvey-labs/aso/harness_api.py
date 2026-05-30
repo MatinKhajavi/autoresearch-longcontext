@@ -43,6 +43,7 @@ class EvalResult(BaseModel):
     turn_count: int
     input_tokens: int
     output_tokens: int
+    peak_input_tokens: int = 0     # peak single-request prompt size — the real overflow gauge
     wall_clock_seconds: float
     documents_read: int
     total_documents: int
@@ -50,6 +51,7 @@ class EvalResult(BaseModel):
     status: str = "ok"                # "ok" | "failed"
     error: str | None = None
     variant_id: str | None = None
+    transcript_tail: str = ""      # tier-3: carried out of the overlay before it is deleted
 
 
 def _slug(s: str) -> str:
@@ -69,6 +71,17 @@ def run_and_score(
     # uuid (not just time) so K parallel seed-replicas of the same (variant,task)
     # never collide on the run directory.
     run_id = run_id or f"aso/{_slug(task)}/{model.split('/')[-1]}/{uuid.uuid4().hex[:10]}"
+
+    # Tier-3: a variant that edits harness code runs against an isolated, edited
+    # COPY of the harness in a throwaway subprocess (the real harness is never
+    # mutated — that is our "reset"). Skipped when there are no code_overrides.
+    if scaffold.code_overrides:
+        from aso.harness_overlay import run_in_overlay
+        return run_in_overlay(
+            task=task, scaffold=scaffold, model=model, judge_model=judge_model,
+            max_turns=max_turns, run_id=run_id, variant_id=variant_id,
+            judge_parallel=judge_parallel,
+        )
 
     def _fail(e: Exception) -> EvalResult:
         return EvalResult(
@@ -121,6 +134,7 @@ def run_and_score(
             "model": model, "task": task, "run_id": run_id,
             "turn_count": r["turn_count"], "input_tokens": r["input_tokens"],
             "output_tokens": r["output_tokens"], "wall_clock_seconds": r["wall_clock_seconds"],
+            "peak_input_tokens": r.get("peak_input_tokens", 0),
             "finished_cleanly": r["finished_cleanly"], "context_overflow": r["context_overflow"],
             **r["tool_metrics"],
         }
@@ -137,6 +151,7 @@ def run_and_score(
             n_passed=nP, n_criteria=nC, context_overflow=r["context_overflow"],
             turn_count=r["turn_count"], input_tokens=r["input_tokens"],
             output_tokens=r["output_tokens"], wall_clock_seconds=r["wall_clock_seconds"],
+            peak_input_tokens=r.get("peak_input_tokens", 0),
             documents_read=metrics.get("documents_read", 0),
             total_documents=(metrics.get("total_documents") or metrics.get("total_vdr_files") or 0),
             failed_criteria=failed, variant_id=variant_id,

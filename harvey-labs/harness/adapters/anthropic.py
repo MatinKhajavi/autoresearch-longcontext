@@ -71,7 +71,10 @@ class AnthropicAdapter(ModelAdapter):
                 16384,
             )
         self.max_tokens = max_tokens
-        self.client = anthropic.Anthropic()
+        # max_retries: absorb 429/overloaded under high fan-out (the SDK respects
+        # retry-after with exp backoff) so rate-limiting degrades to slowdown,
+        # not failed runs / a corrupted optimization signal.
+        self.client = anthropic.Anthropic(max_retries=8)
         self._system_prompt: str | None = None
 
     def chat(self, messages: list[dict], tools: list[dict]) -> ModelResponse:
@@ -144,6 +147,7 @@ class AnthropicAdapter(ModelAdapter):
             text="\n".join(text_parts),
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
+            stop_reason=response.stop_reason,
         )
 
     def make_tool_result_messages(self, results: list[tuple[str, str]]) -> list[dict]:

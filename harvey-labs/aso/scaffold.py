@@ -28,6 +28,10 @@ class Scaffold(BaseModel):
     system_prompt: str
     skills: dict[str, str] = Field(default_factory=dict)
     module_config: dict = Field(default_factory=dict)
+    # Tier-3: repo-root-relative path UNDER harness/ (e.g. "harness/agent_loop.py",
+    # "harness/skills/docx/scripts/redline.py") -> full new source. Empty by default
+    # so a baseline scaffold runs the stock harness unchanged.
+    code_overrides: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
     def baseline(cls) -> "Scaffold":
@@ -54,10 +58,12 @@ class Scaffold(BaseModel):
         system_prompt: str | None = None,
         skills: dict[str, str] | None = None,
         module_config: dict | None = None,
+        code_overrides: dict[str, str] | None = None,
     ) -> "Scaffold":
         """Return a new Scaffold with selected fields overridden (immutability helper)."""
         return Scaffold(
             system_prompt=system_prompt if system_prompt is not None else self.system_prompt,
             skills=skills if skills is not None else dict(self.skills),
             module_config=module_config if module_config is not None else dict(self.module_config),
+            code_overrides=code_overrides if code_overrides is not None else dict(self.code_overrides),
         )

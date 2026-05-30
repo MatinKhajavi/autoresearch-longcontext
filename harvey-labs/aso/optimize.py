@@ -23,7 +23,7 @@ from harness.run import _load_env
 _load_env()
 
 from aso.controller import build_jobs, make_modal_eval_fn, mean_by_variant
-from aso.datasets import DEV, HOLDOUT, SCREEN
+from aso.datasets import DEV, HOLDOUT, SCREEN, TASK_SETS
 from aso.researcher import ResearchState, build_researcher
 from aso.scaffold import Scaffold
 from aso.tracking import RunLedger, live
@@ -76,7 +76,8 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         researcher = build_researcher(model=researcher_model, tier=tier)
         seed = (
             f"Baseline scaffold scores {base_dev_mean:.3f} mean criterion-pass-rate on the "
-            f"dev set ({len(DEV)} tasks). Sample failing criteria: {sample_fails}. "
+            f"dev set ({len(dev)} tasks); {base_overflows} dev run(s) overflowed context. "
+            f"Sample failing criteria: {sample_fails}. "
             f"Run up to {rounds} rounds to improve it. Begin round 1."
         )
         # max_turns budget: a few agent turns per round (propose/evaluate/inspect/set/decide)
@@ -127,10 +128,13 @@ def main():
                    help="runs per task for the baseline/champion headline numbers, averaged")
     p.add_argument("--tier", type=int, default=1, choices=[1, 2, 3],
                    help="mutation surface: 1=text only, 2=+long-context modules, 3=+code")
+    p.add_argument("--task-set", default="default", choices=list(TASK_SETS),
+                   help="default = small analysis tasks; heavy = big matters where memory mgmt helps")
     a = p.parse_args()
-    screen = SCREEN[: a.max_screen] if a.max_screen else SCREEN
-    dev = DEV[: a.max_dev] if a.max_dev else DEV
-    holdout = HOLDOUT[: a.max_holdout] if a.max_holdout else HOLDOUT
+    base_screen, base_dev, base_holdout = TASK_SETS[a.task_set]
+    screen = base_screen[: a.max_screen] if a.max_screen else base_screen
+    dev = base_dev[: a.max_dev] if a.max_dev else base_dev
+    holdout = base_holdout[: a.max_holdout] if a.max_holdout else base_holdout
     asyncio.run(run_optimization(
         a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns,
         screen=screen, dev=dev, holdout=holdout, seeds=a.seeds, headline_seeds=a.headline_seeds,
