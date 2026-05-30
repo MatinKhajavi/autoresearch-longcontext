@@ -70,6 +70,7 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         state = ResearchState(
             champion=baseline, screen=screen, dev=dev, model=model, judge_model=judge_model,
             eval_fn=eval_fn, inner_max_turns=inner_max_turns, seeds=seeds, tier=tier,
+            rounds_jsonl_path=str(RESULTS / f"rounds_tier{tier}.jsonl"),
             baseline_dev_mean=round(base_dev_mean, 3),
         )
         researcher = build_researcher(model=researcher_model, tier=tier)

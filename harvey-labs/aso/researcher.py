@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from aso.controller import successive_halving
 from aso.scaffold import Scaffold
+from aso.tracking import append_jsonl
 
 
 # ── researcher state (carried via RunContext) ────────────────────────────
@@ -38,6 +39,7 @@ class ResearchState:
     inner_max_turns: int = 120
     seeds: int = 1                        # runs per (variant, task) — averaged (noise control)
     tier: int = 1                         # 1=text only; 2=+long-context modules; 3=+code
+    rounds_jsonl_path: str | None = None  # per-round summaries appended here (live progress)
     rounds_done: int = 0
     materialized: dict[str, Scaffold] = field(default_factory=dict)
     traces: dict[str, str] = field(default_factory=dict)   # run_id -> transcript tail
@@ -131,6 +133,10 @@ async def evaluate(ctx: RunContextWrapper[ResearchState], variants: list[Variant
     st.rounds_done += 1
     summary = _summarize(table, specs, st)
     st.history.append(summary)
+    # Persist the round summary immediately so progress is visible mid-run
+    # (e.g. `tail -f rounds_tier{N}.jsonl` shows round 1 while round 2 runs).
+    if st.rounds_jsonl_path:
+        append_jsonl(st.rounds_jsonl_path, summary)
     return summary
 
 
