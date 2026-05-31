@@ -136,11 +136,16 @@ def _summarize(table: dict, specs: dict[str, VariantSpec], st: ResearchState) ->
         "round": st.rounds_done,
         "screen_means": {k: round(v, 3) for k, v in table["screen_means"].items()},
         "dev_means": {k: round(v, 3) for k, v in table["dev_means"].items()},
+        # dev_medians is the DECISION metric (robust to the ~1/3 spurious-0.0 runs);
+        # dev_zero_rate is the reliability signal to weigh against it.
+        "dev_medians": {k: round(v, 3) for k, v in table.get("dev_medians", {}).items()},
+        "dev_zero_rate": {k: round(v, 2) for k, v in table.get("dev_zero_rate", {}).items()},
         "dev_overflow_rate": {v: round(x, 2) for v, x in _mean_by_variant("context_overflow").items()},
         "dev_mean_input_tokens": {v: int(x) for v, x in _mean_by_variant("input_tokens").items()},
         "dev_mean_turns": {v: round(x, 1) for v, x in _mean_by_variant("turn_count").items()},
         "survivors": table["survivors"],
         "round_best_variant": champ,
+        "round_best_dev_median": round(table.get("dev_medians", {}).get(champ, 0.0), 3),
         "round_best_dev_mean": round(table["dev_means"].get(champ, 0.0), 3),
         "baseline_dev_mean": st.baseline_dev_mean,
         "sample_failed_criteria": sample_fails[:8],
@@ -240,14 +245,23 @@ Each round:
      instructions, then fix gaps) — historically the biggest gain;
    - require broad document COVERAGE before drafting;
    - structure the work: read -> note key facts -> draft -> verify.
-   Always include one variant id "keep" that re-states the current champion
-   unchanged, as a control.
-2. Call evaluate(variants). Read dev_means vs baseline_dev_mean.
+   Do NOT spend a slot on a do-nothing "keep"/control variant. The unchanged
+   baseline was measured ONCE at the start; its score is handed to you every
+   round as baseline_dev_mean — a FIXED bar. Every variant you propose must be a
+   real change.
+2. Call evaluate(variants). Judge variants by dev_medians (the ROBUST score:
+   median over seeds, so one unlucky 0.0 run can't fool you) — NOT by a single
+   lucky run or by dev_means. Also read dev_zero_rate: a variant with a good
+   median but a high zero_rate is UNRELIABLE; prefer a slightly-lower-median
+   variant that fails to produce a deliverable less often.
 3. Optionally inspect_trace(run_id) on the best variant to see WHY criteria
    still fail, and use that to form the next round's hypotheses.
-4. Call set_champion(best_variant_id) if it beats the current champion.
-5. Stop after ~3 rounds or when gains plateau, then summarize what worked and
-   why in 3-4 sentences.
+4. Call set_champion(best_variant_id) ONLY if its dev_median beats
+   baseline_dev_mean by a real margin (>= 0.03) AND its zero_rate is no worse
+   than the baseline's. A variant that merely ties the bar within noise is NOT an
+   improvement — leave the baseline as champion in that case.
+5. Stop after ~3 rounds or when gains plateau (a round where nothing clears the
+   margin), then summarize what worked and why in 3-4 sentences.
 
 CONTEXT & COST SIGNALS. The inner agent is claude-haiku-4-5 with a ~200K-token
 context window. Matters whose documents exceed it OVERFLOW: the agent dies

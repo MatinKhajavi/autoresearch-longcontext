@@ -40,7 +40,7 @@ async def evaluate_scaffold(scaffold, tasks, eval_fn, model, judge_model, max_tu
 
 async def run_optimization(rounds, model, judge_model, researcher_model, inner_max_turns,
                            screen=SCREEN, dev=DEV, holdout=HOLDOUT, seeds=1, headline_seeds=3,
-                           tier=1):
+                           tier=1, reuse_baseline=True):
     RESULTS.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(round_label=f"tier{tier}-baseline")
     jsonl = RESULTS / f"runs_tier{tier}.jsonl"   # per-tier so T1/T2/T3 don't overwrite
@@ -50,20 +50,35 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         baseline = Scaffold.baseline()
 
         # ── Baseline on dev + holdout (the number to beat) ───────────────
-        base_dev_mean, base_dev_results = await evaluate_scaffold(
-            baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline",
-            seeds=headline_seeds)
-        base_hold_mean, _ = await evaluate_scaffold(
-            baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout",
-            seeds=headline_seeds)
-        base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
-        sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
-        (RESULTS / f"baseline_tier{tier}.json").write_text(json.dumps({
-            "dev_mean_pass_rate": base_dev_mean, "holdout_mean_pass_rate": base_hold_mean,
-            "dev_overflows": base_overflows, "model": model, "judge_model": judge_model,
-            "n_dev": len(dev), "n_holdout": len(holdout), "tier": tier,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-        }, indent=2))
+        # The unchanged scaffold is measured ONCE, ever. By default we REUSE the
+        # recorded baseline_tier{tier}.json and skip this phase — re-running the
+        # baseline here (plus the per-round "keep" control, now removed) was the
+        # bulk of the wasted compute. Pass --fresh-baseline to force a re-measure.
+        recorded = RESULTS / f"baseline_tier{tier}.json"
+        if reuse_baseline and recorded.exists():
+            rec = json.loads(recorded.read_text())
+            base_dev_mean = rec.get("dev_mean_pass_rate", 0.0)
+            base_hold_mean = rec.get("holdout_mean_pass_rate", 0.0)
+            base_overflows = rec.get("dev_overflows", 0)
+            sample_fails = []
+            print(f"[baseline] REUSING {recorded.name}: dev={base_dev_mean:.3f} "
+                  f"holdout={base_hold_mean:.3f}  (baseline phase skipped; "
+                  f"--fresh-baseline to re-measure)")
+        else:
+            base_dev_mean, base_dev_results = await evaluate_scaffold(
+                baseline, dev, eval_fn, model, judge_model, inner_max_turns, "baseline",
+                seeds=headline_seeds)
+            base_hold_mean, _ = await evaluate_scaffold(
+                baseline, holdout, eval_fn, model, judge_model, inner_max_turns, "baseline_holdout",
+                seeds=headline_seeds)
+            base_overflows = sum(1 for r in base_dev_results if r.get("context_overflow"))
+            sample_fails = [t for r in base_dev_results for t in r.get("failed_criteria", [])[:2]][:10]
+            (RESULTS / f"baseline_tier{tier}.json").write_text(json.dumps({
+                "dev_mean_pass_rate": base_dev_mean, "holdout_mean_pass_rate": base_hold_mean,
+                "dev_overflows": base_overflows, "model": model, "judge_model": judge_model,
+                "n_dev": len(dev), "n_holdout": len(holdout), "tier": tier,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            }, indent=2))
 
         # ── Researcher loop (agent proposes; controller allocates) ───────
         ledger.round_label = f"tier{tier}-optimizing"
@@ -84,14 +99,21 @@ async def run_optimization(rounds, model, judge_model, researcher_model, inner_m
         await Runner.run(researcher, seed, context=state, max_turns=rounds * 6 + 4)
 
         # ── Champion on dev + holdout (honest headline) ──────────────────
+        # If the search never cleared the bar, the champion IS the baseline — don't
+        # pay to re-measure the unchanged scaffold a third time; reuse its numbers.
         ledger.round_label = "champion-eval"
-        champ_dev_mean, _ = await evaluate_scaffold(
-            state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion",
-            seeds=headline_seeds)
-        champ_hold_mean, champ_hold_results = await evaluate_scaffold(
-            state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout",
-            seeds=headline_seeds)
-        champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
+        if state.champion.model_dump() == baseline.model_dump():
+            champ_dev_mean, champ_hold_mean, champ_overflows = base_dev_mean, base_hold_mean, 0
+            print("[champion] unchanged from baseline — reusing baseline headline "
+                  "(no extra champion runs)")
+        else:
+            champ_dev_mean, _ = await evaluate_scaffold(
+                state.champion, dev, eval_fn, model, judge_model, inner_max_turns, "champion",
+                seeds=headline_seeds)
+            champ_hold_mean, champ_hold_results = await evaluate_scaffold(
+                state.champion, holdout, eval_fn, model, judge_model, inner_max_turns, "champion_holdout",
+                seeds=headline_seeds)
+            champ_overflows = sum(1 for r in champ_hold_results if r.get("context_overflow"))
 
     (RESULTS / f"champion_tier{tier}.json").write_text(json.dumps({
         "tier": tier,
@@ -123,13 +145,19 @@ def main():
     p.add_argument("--max-screen", type=int, default=None, help="cap screen tasks (fast validation)")
     p.add_argument("--max-dev", type=int, default=None, help="cap dev tasks (fast validation)")
     p.add_argument("--max-holdout", type=int, default=None, help="cap holdout tasks (fast validation)")
-    p.add_argument("--seeds", type=int, default=2, help="runs per (variant,task) in the loop, averaged")
+    p.add_argument("--seeds", type=int, default=3,
+                   help="runs per (variant,task) in the loop; >=3 lets the controller's median "
+                        "de-noise the ~1/3 spurious-0.0 runs (at <=2 it can't)")
     p.add_argument("--headline-seeds", type=int, default=3,
                    help="runs per task for the baseline/champion headline numbers, averaged")
     p.add_argument("--tier", type=int, default=1, choices=[1, 2, 3],
                    help="mutation surface: 1=text only, 2=+long-context modules, 3=+code")
     p.add_argument("--task-set", default="default", choices=list(TASK_SETS),
                    help="default = small analysis tasks; heavy = big matters where memory mgmt helps")
+    p.add_argument("--fresh-baseline", action="store_true",
+                   help="re-measure the baseline even if results/aso/baseline_tier{tier}.json exists. "
+                        "Default REUSES the recorded baseline and skips the baseline phase entirely "
+                        "(the unchanged scaffold is measured once, ever — not re-run every invocation).")
     a = p.parse_args()
     base_screen, base_dev, base_holdout = TASK_SETS[a.task_set]
     screen = base_screen[: a.max_screen] if a.max_screen else base_screen
@@ -138,7 +166,7 @@ def main():
     asyncio.run(run_optimization(
         a.rounds, a.model, a.judge_model, a.researcher_model, a.inner_max_turns,
         screen=screen, dev=dev, holdout=holdout, seeds=a.seeds, headline_seeds=a.headline_seeds,
-        tier=a.tier))
+        tier=a.tier, reuse_baseline=not a.fresh_baseline))
 
 
 if __name__ == "__main__":

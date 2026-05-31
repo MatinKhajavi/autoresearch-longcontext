@@ -11,6 +11,8 @@ production. Each job is a plain dict (crosses the Modal boundary); each result
 carries `variant_id`, `task`, `pass_rate`, `status`, ...
 """
 
+from statistics import median
+
 from aso.scaffold import Scaffold
 
 
@@ -42,6 +44,34 @@ def mean_by_variant(results: list[dict]) -> dict[str, float]:
     return {vid: (sum(v) / len(v) if v else 0.0) for vid, v in by.items()}
 
 
+def median_by_variant(results: list[dict]) -> dict[str, float]:
+    """Robust per-variant score: MEDIAN pass-rate over all runs (seeds x tasks).
+
+    The metric is noisy — on this harness a single run can crater to 0.0 (an
+    empty / ungradeable deliverable) on an otherwise-strong scaffold (~1/3 of
+    runs, scaffold-independent). The mean lets one such spike dominate; the median
+    outvotes a MINORITY of them, so selection isn't hijacked by one unlucky seed.
+    Needs seeds>=3 to bite (at seeds<=2 median degenerates to the mean). Crashed
+    runs (status=failed -> pass_rate 0.0) are kept in, so a consistently-broken
+    variant is still correctly punished."""
+    by: dict[str, list[float]] = {}
+    for r in results:
+        by.setdefault(r["variant_id"], []).append(float(r.get("pass_rate", 0.0) or 0.0))
+    return {vid: (median(v) if v else 0.0) for vid, v in by.items()}
+
+
+def zero_rate_by_variant(results: list[dict]) -> dict[str, float]:
+    """Per-variant fraction of runs scoring exactly 0.0 (ungradeable / crashed).
+
+    A RELIABILITY signal kept separate from the quality score: two variants can
+    share a median yet differ sharply in how often they produce nothing usable."""
+    by: dict[str, list[float]] = {}
+    for r in results:
+        by.setdefault(r["variant_id"], []).append(
+            1.0 if (float(r.get("pass_rate", 0.0) or 0.0) == 0.0) else 0.0)
+    return {vid: (sum(v) / len(v) if v else 0.0) for vid, v in by.items()}
+
+
 async def successive_halving(
     variants: dict[str, Scaffold],
     screen: list[str],
@@ -56,25 +86,35 @@ async def successive_halving(
     # 1. SCREEN
     screen_results = await eval_fn(build_jobs(variants, screen, model, judge_model, max_turns, seeds))
     screen_means = mean_by_variant(screen_results)
+    screen_medians = median_by_variant(screen_results)
 
-    # 2. PRUNE — keep top-m by screen mean (the rest never touch the dev set)
-    survivors = sorted(screen_means, key=lambda v: screen_means[v], reverse=True)[:keep_m]
+    # 2. PRUNE — keep top-m by ROBUST score (median; mean breaks ties). Median so
+    #    one unlucky 0.0 seed doesn't prune an otherwise-strong variant.
+    survivors = sorted(
+        screen_medians,
+        key=lambda v: (screen_medians[v], screen_means.get(v, 0.0)),
+        reverse=True,
+    )[:keep_m]
 
     # 3. PROMOTE — survivors on the full dev set
     survivor_variants = {v: variants[v] for v in survivors}
     dev_results = await eval_fn(build_jobs(survivor_variants, dev, model, judge_model, max_turns, seeds))
     dev_means = mean_by_variant(dev_results)
+    dev_medians = median_by_variant(dev_results)
 
-    # 4. champion = best dev mean (fallback to best screener if dev empty)
-    if dev_means:
-        champion = max(dev_means, key=lambda v: dev_means[v])
+    # 4. champion = best dev MEDIAN (mean breaks ties); fall back to best screener.
+    if dev_medians:
+        champion = max(dev_medians, key=lambda v: (dev_medians[v], dev_means.get(v, 0.0)))
     else:
         champion = survivors[0] if survivors else None
 
     table = {
         "screen_means": screen_means,
+        "screen_medians": screen_medians,
         "survivors": survivors,
         "dev_means": dev_means,
+        "dev_medians": dev_medians,
+        "dev_zero_rate": zero_rate_by_variant(dev_results),
         "champion": champion,
         "screen_results": screen_results,
         "dev_results": dev_results,
